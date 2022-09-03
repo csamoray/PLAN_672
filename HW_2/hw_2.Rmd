@@ -1,0 +1,21 @@
+---
+title: "hw2"
+author: "Chris Samoray"
+date: "9/3/2022"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+library(readr)
+```
+
+```{r}
+# load data
+cbsa.data <- read_csv("../HW_2/data/annual_aqi_by_cbsa_2021.csv")
+county.data <- read_csv("../HW_2/data/annual_aqi_by_county_2021.csv")
+monitor.data <- read_csv("../HW_2/data/annual_conc_by_monitor_2021.csv")
+
+```
+
