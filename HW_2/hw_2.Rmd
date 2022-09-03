@@ -8,14 +8,81 @@ output: html_document
 ```{r setup, include=FALSE}
 knitr::opts_chunk$set(echo = TRUE)
 
-library(readr)
+library(tidyverse)
 ```
 
 ```{r}
-# load data
-cbsa.data <- read_csv("../HW_2/data/annual_aqi_by_cbsa_2021.csv")
-county.data <- read_csv("../HW_2/data/annual_aqi_by_county_2021.csv")
-monitor.data <- read_csv("../HW_2/data/annual_conc_by_monitor_2021.csv")
+# load NO2 & O3 data from 2021
+no2.df <- read_csv("../HW_2/data/daily_42602_2021.csv")
+o3.df <- read_csv("../HW_2/data/daily_44201_2021.csv")
 
+##############
+# clean data
+##############
+
+# what does data look like?
+glimpse(no2.df) 
+glimpse(o3.df) 
+
+# function to clean datasets
+aqi.fcn <- function(x){
+  
+# remove spaces in column names
+names(x) <- gsub(" ", "_", names(x)) 
+
+# create new column of state/co fips code
+x$stcofips <- paste(formatC(x$State_Code, width = 2, flag = "0"), formatC(x$County_Code, width = 3, flag = "0"), sep = "") # flag searches for leading zeros
+
+print(x$stcofips %>% unique() %>% length()) # how many counties included
+print(unique(nchar(x$stcofips))) # all have fips with 5 numbers
+
+# select columns of interest
+x <- x %>% select(stcofips, State_Name, County_Name, CBSA_Name, Site_Num, Longitude, Latitude, Date_Local, AQI, Parameter_Name)
+
+  return(x)
+}
+
+no2.df2 <- aqi.fcn(no2.df) # clean no2
+o3.df2 <- aqi.fcn(o3.df) # clean o3
+
+```
+```{r}
+##############
+# create summary dfs
+##############
+no2.group <- group_by(no2.df2, )
+
+no2.group <- group_by(no2.df2, stcofips, Date_Local, Site_Num) %>% 
+                summarize(maxAQI = max(AQI),
+                          State_Name = first(State_Name),
+                          County_Name = first(County_Name),
+                          CBSA_Name = first(CBSA_Name))
+
+test <- group_by(no2.group, stcofips, Date_Local) %>% 
+        summarize(maxAQI = max(maxAQI),
+                  site = Site_Num)
+
+no2.geo <- no2.df2 %>% select(stcofips, Longitude, Latitude, Date_Local, Site_Num)
+no2.geo <- unique(no2.geo[, c("stcofips", "Longitude", "Latitude", "Date_Local", "Site_Num")])
+no2.group <- left_join(no2.group, no2.geo, by = c("stcofips", "Date_Local", "Site_Num"))
+    
+df <- data.frame(date = c("2022-01-01", "2022-01-01", "2022-01-02", "2022-01-02"),
+                 monitor = c("1", "2", "1", "2"),
+                 county = c("help", "help", "help", "help"),
+                 aqi = c(50, 100, 151, 35))
+
+# this returns one max observation, but no monitor
+test <- group_by(df, date, county) %>% 
+          summarise(maxAQI = max(aqi))
+
+# this returns two monitor observations with same max
+test <- group_by(df, date, county) %>% 
+          summarise(maxAQI = max(aqi),
+                    monitor = monitor)
+
+df <- data.frame(date = c("2022-01-01", "2022-01-02"),
+                 monitor = c("2", "1"),
+                 county = c("help", "help"),
+                 aqi = c(100, 151))
 ```
 
