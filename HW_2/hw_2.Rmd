@@ -9,8 +9,8 @@ output: html_document
 knitr::opts_chunk$set(echo = TRUE)
 
 library(tidyverse)
-library(lubridate)
 library(leaflet)
+library(widgetframe)
 ```
 
 ```{r}
@@ -41,9 +41,9 @@ print(unique(nchar(x$stcofips))) # all have fips with 5 numbers
 # select columns of interest
 x <- x %>% select(stcofips, State_Name, County_Name, CBSA_Name, Site_Num, Longitude, Latitude, Date_Local, AQI, Parameter_Name)
 
-x <- x %>%  mutate(month = substr(Date_Local, 6, 7),
-                                 sitetag = 1) # to denote 1 monitor 
- return(x)
+x <- x %>%  mutate(month = substr(Date_Local, 6, 7))
+ 
+return(x)
 }
 
 no2.df2 <- aqi.fcn(no2.df) # clean no2
@@ -69,14 +69,14 @@ o3.df2 <- aqi.fcn(o3.df) # clean o3
 #                           Longitude = first(Longitude),
 #                           Latitude = first(Latitude))
                          
-# no2.group <- no2.df2 %>% group_by(stcofips, Date_Local) %>%        arrange(desc(AQI), .by_group = T) %>% 
-#                           summarize(maxAQI = max(AQI),
-#                           Site_Num = first(Site_Num),
-#                           State_Name = first(State_Name),
-#                           County_Name = first(County_Name),
-#                           CBSA_Name = first(CBSA_Name),
-#                           Longitude = first(Longitude),
-#                           Latitude = first(Latitude))
+no2.group <- no2.df2 %>% group_by(stcofips, Date_Local) %>%        arrange(desc(AQI), .by_group = T) %>%
+                          summarize(maxAQI = max(AQI),
+                          Site_Num = first(Site_Num),
+                          State_Name = first(State_Name),
+                          County_Name = first(County_Name),
+                          CBSA_Name = first(CBSA_Name),
+                          Longitude = first(Longitude),
+                          Latitude = first(Latitude))
 #                   
 # test <- no2.df2 %>% group_by(stcofips, month, Site_Num) %>% 
 #                           summarise(aqi_month_avg = 
@@ -90,9 +90,8 @@ o3.df2 <- aqi.fcn(o3.df) # clean o3
 # select aqi monitor with highest monthly average based on daily max aqi in each cbsa 
 aqi.month.avg.high <- function(x){
 x <- x %>% group_by(stcofips, month, Site_Num) %>% 
-                          summarise(aqi_month_avg = 
-                              sum(AQI) / sum(sitetag),
-                              State_Name = first(State_Name),
+                          summarise(aqi_month_avg = mean(AQI),
+                              State_Name = first(State_Name), # first in group, so okay bc will be the same for same monitor
                               County_Name = first(County_Name),
                               CBSA_Name = first(CBSA_Name),
                               Longitude = first(Longitude),
@@ -108,36 +107,71 @@ x <- x %>% group_by(stcofips, month, Site_Num) %>%
 return(x)
 }
 
-no2.high <- aqi.month.avg.high(no2.df2)
-o3.high <- aqi.month.avg.high(o3.df2)
-
-# select aqi monitor with lowest monthly average based on daily max aqi in each cbsa 
-aqi.month.avg.low <- function(x){
-x <- x %>% group_by(stcofips, month, Site_Num) %>% 
-                          summarise(aqi_month_avg = 
-                              sum(AQI) / sum(sitetag),
-                              State_Name = first(State_Name),
-                              County_Name = first(County_Name),
-                              CBSA_Name = first(CBSA_Name),
-                              Longitude = first(Longitude),
-                              Latitude = first(Latitude)) %>%
-                          arrange(aqi_month_avg, .by_group = T) %>% # select low
-                          summarise(aqi_month_avg = first(aqi_month_avg),
-                          Site_Num = first(Site_Num), # why need this, shouldn't it be in the group?
-                              State_Name = first(State_Name),
+no2.high.co <- aqi.month.avg.high(no2.df2)
+no2.high.st <- no2.high.co %>% group_by(State_Name, month) %>%
+                arrange(desc(aqi_month_avg), .by_group = T) %>% 
+                    summarise(max_month_avg = max(aqi_month_avg),
                               County_Name = first(County_Name),
                               CBSA_Name = first(CBSA_Name),
                               Longitude = first(Longitude),
                               Latitude = first(Latitude))
-return(x)
-}
 
-no2.low <- aqi.month.avg.low(no2.df2)
-o3.low <- aqi.month.avg.low(o3.df2)
+o3.high <- aqi.month.avg.high(o3.df2)
+
+# # select aqi monitor with lowest monthly average based on daily max aqi in each cbsa 
+# aqi.month.avg.low <- function(x){
+# x <- x %>% group_by(stcofips, month, Site_Num) %>% 
+#                           summarise(aqi_month_avg = 
+#                               sum(AQI) / sum(sitetag),
+#                               State_Name = first(State_Name),
+#                               County_Name = first(County_Name),
+#                               CBSA_Name = first(CBSA_Name),
+#                               Longitude = first(Longitude),
+#                               Latitude = first(Latitude)) %>%
+#                           arrange(aqi_month_avg, .by_group = T) %>% # select low
+#                           summarise(aqi_month_avg = first(aqi_month_avg),
+#                           Site_Num = first(Site_Num), # why need this, shouldn't it be in the group?
+#                               State_Name = first(State_Name),
+#                               County_Name = first(County_Name),
+#                               CBSA_Name = first(CBSA_Name),
+#                               Longitude = first(Longitude),
+#                               Latitude = first(Latitude))
+# return(x)
+# }
+
+# no2.low <- aqi.month.avg.low(no2.df2)
+# o3.low <- aqi.month.avg.low(o3.df2)
 ```
 
-```{r no2 max map}
-no2.group$Date_Local <- mdy(no2.group$Date_Local)
+
+
+```{r, monthly avg plots}
+# month.avg.plot <- function(i, z){
+  ggplot() + 
+  geom_point(data = no2.high.co, aes(x=month, y=aqi_month_avg), alpha=.5, show.legend = FALSE) +
+  labs(x = "Month", y = "Avg AQI")+
+  facet_wrap(~State_Name)+
+  theme_bw()
+  
+
+
+
+month.avg.plot(no2.high, no2.low)
+month.avg.plot(no2.low)
+month.avg.plot(o3.high)
+month.avg.plot(o3.low)
+
+```
+
+```{r monthly avg maps}
+m <- leaflet() %>%
+  addProviderTiles(providers$CartoDB.Positron) %>% 
+  addCircles(data = no2.high.st, group = "Monthly Avg High NO2") %>%
+  addLayersControl(
+    overlayGroups = c("Monthly Avg High NO2", "Monthly Avg Low NO2", 'Basemap'),
+    options = layersControlOptions(collapsed = FALSE))
+
+frameWidget(m, height = 350, width = '95%')
 
 ```
 
