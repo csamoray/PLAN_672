@@ -9,6 +9,8 @@ output: html_document
 knitr::opts_chunk$set(echo = TRUE)
 
 library(tidyverse)
+library(lubridate)
+library(leaflet)
 ```
 
 ```{r}
@@ -39,50 +41,108 @@ print(unique(nchar(x$stcofips))) # all have fips with 5 numbers
 # select columns of interest
 x <- x %>% select(stcofips, State_Name, County_Name, CBSA_Name, Site_Num, Longitude, Latitude, Date_Local, AQI, Parameter_Name)
 
-  return(x)
+x <- x %>%  mutate(month = substr(Date_Local, 6, 7),
+                                 sitetag = 1) # to denote 1 monitor 
+ return(x)
 }
 
 no2.df2 <- aqi.fcn(no2.df) # clean no2
 o3.df2 <- aqi.fcn(o3.df) # clean o3
 
 ```
+
+
 ```{r}
 ##############
 # create summary dfs
 ##############
-no2.group <- group_by(no2.df2, )
 
-no2.group <- group_by(no2.df2, stcofips, Date_Local, Site_Num) %>% 
-                summarize(maxAQI = max(AQI),
-                          State_Name = first(State_Name),
-                          County_Name = first(County_Name),
-                          CBSA_Name = first(CBSA_Name))
+# # select max recording of all cbsa monitors for each day
+# # this is imperfect bc some monitors record the same aqi number on some days
+#          
+# no2.group <- no2.df2 %>% group_by(stcofips, Date_Local) %>%        arrange(desc(AQI), .by_group = T) %>% 
+#                           summarize(maxAQI = max(AQI),
+#                           Site_Num = first(Site_Num),
+#                           State_Name = first(State_Name),
+#                           County_Name = first(County_Name),
+#                           CBSA_Name = first(CBSA_Name),
+#                           Longitude = first(Longitude),
+#                           Latitude = first(Latitude))
+                         
+# no2.group <- no2.df2 %>% group_by(stcofips, Date_Local) %>%        arrange(desc(AQI), .by_group = T) %>% 
+#                           summarize(maxAQI = max(AQI),
+#                           Site_Num = first(Site_Num),
+#                           State_Name = first(State_Name),
+#                           County_Name = first(County_Name),
+#                           CBSA_Name = first(CBSA_Name),
+#                           Longitude = first(Longitude),
+#                           Latitude = first(Latitude))
+#                   
+# test <- no2.df2 %>% group_by(stcofips, month, Site_Num) %>% 
+#                           summarise(aqi_month_avg = 
+#                               sum(AQI) / sum(sitetag),
+#                               State_Name = first(State_Name),
+#                               County_Name = first(County_Name),
+#                               CBSA_Name = first(CBSA_Name),
+#                               Longitude = first(Longitude),
+#                               Latitude = first(Latitude))
 
-test <- group_by(no2.group, stcofips, Date_Local) %>% 
-        summarize(maxAQI = max(maxAQI),
-                  site = Site_Num)
+# select aqi monitor with highest monthly average based on daily max aqi in each cbsa 
+aqi.month.avg.high <- function(x){
+x <- x %>% group_by(stcofips, month, Site_Num) %>% 
+                          summarise(aqi_month_avg = 
+                              sum(AQI) / sum(sitetag),
+                              State_Name = first(State_Name),
+                              County_Name = first(County_Name),
+                              CBSA_Name = first(CBSA_Name),
+                              Longitude = first(Longitude),
+                              Latitude = first(Latitude)) %>%
+                          arrange(desc(aqi_month_avg), .by_group = T) %>% # select high
+                          summarise(aqi_month_avg = first(aqi_month_avg),
+                                    Site_Num = first(Site_Num), # why need this, shouldn't it be in the group?
+                              State_Name = first(State_Name),
+                              County_Name = first(County_Name),
+                              CBSA_Name = first(CBSA_Name),
+                              Longitude = first(Longitude),
+                              Latitude = first(Latitude),.groups = "keep")
+return(x)
+}
 
-no2.geo <- no2.df2 %>% select(stcofips, Longitude, Latitude, Date_Local, Site_Num)
-no2.geo <- unique(no2.geo[, c("stcofips", "Longitude", "Latitude", "Date_Local", "Site_Num")])
-no2.group <- left_join(no2.group, no2.geo, by = c("stcofips", "Date_Local", "Site_Num"))
-    
-df <- data.frame(date = c("2022-01-01", "2022-01-01", "2022-01-02", "2022-01-02"),
-                 monitor = c("1", "2", "1", "2"),
-                 county = c("help", "help", "help", "help"),
-                 aqi = c(50, 100, 151, 35))
+no2.high <- aqi.month.avg.high(no2.df2)
+o3.high <- aqi.month.avg.high(o3.df2)
 
-# this returns one max observation, but no monitor
-test <- group_by(df, date, county) %>% 
-          summarise(maxAQI = max(aqi))
+# select aqi monitor with lowest monthly average based on daily max aqi in each cbsa 
+aqi.month.avg.low <- function(x){
+x <- x %>% group_by(stcofips, month, Site_Num) %>% 
+                          summarise(aqi_month_avg = 
+                              sum(AQI) / sum(sitetag),
+                              State_Name = first(State_Name),
+                              County_Name = first(County_Name),
+                              CBSA_Name = first(CBSA_Name),
+                              Longitude = first(Longitude),
+                              Latitude = first(Latitude)) %>%
+                          arrange(aqi_month_avg, .by_group = T) %>% # select low
+                          summarise(aqi_month_avg = first(aqi_month_avg),
+                          Site_Num = first(Site_Num), # why need this, shouldn't it be in the group?
+                              State_Name = first(State_Name),
+                              County_Name = first(County_Name),
+                              CBSA_Name = first(CBSA_Name),
+                              Longitude = first(Longitude),
+                              Latitude = first(Latitude))
+return(x)
+}
 
-# this returns two monitor observations with same max
-test <- group_by(df, date, county) %>% 
-          summarise(maxAQI = max(aqi),
-                    monitor = monitor)
-
-df <- data.frame(date = c("2022-01-01", "2022-01-02"),
-                 monitor = c("2", "1"),
-                 county = c("help", "help"),
-                 aqi = c(100, 151))
+no2.low <- aqi.month.avg.low(no2.df2)
+o3.low <- aqi.month.avg.low(o3.df2)
 ```
+
+```{r no2 max map}
+no2.group$Date_Local <- mdy(no2.group$Date_Local)
+
+```
+
+
+
+
+
 
