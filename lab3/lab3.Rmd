@@ -1,0 +1,20 @@
+---
+title: "lab3"
+author: "Chris Samoray"
+date: "2022-09-07"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+library(here)
+library(sf)
+```
+```{r}
+test <- here("lab3", "data", "201806-citibike-tripdata.csv")
+test <- read_csv(test)
+
+test2 <- here("")
+```
+
