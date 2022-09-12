@@ -8,13 +8,96 @@ output: html_document
 ```{r setup, include=FALSE}
 knitr::opts_chunk$set(echo = TRUE)
 
+library(tidyverse)
 library(here)
 library(sf)
+library(lubridate)
+library(leaflet)
+library(widgetframe)
+```
+
+```{r}
+nyc.data <- read_csv(here("lab3", "data", "201806-citibike-nyc.data.csv"))
+names(nyc.data)
+
+```
+
+```{r}
+nyc.data <- rename(nyc.data, #rename column names to get rid of the space
+                   Slat = `start station latitude`,
+                   Slon = `start station longitude`,
+                   Elat = `end station latitude`,
+                   Elon = `end station longitude`,
+                   Sstid = `start station id`,
+                   Estid = `end station id`,
+                   Estname = `end station name`,
+                   Sstname = `start station name`)
+
+nyc.data
+
+
+#Convert gender and usertype to factor
+nyc.data$gender <- factor(nyc.data$gender, labels=c('Unknown', 'Male', 'Female')) 
+nyc.data$usertype <- factor(nyc.data$usertype)
+summary(nyc.data)
+
+quantile(nyc.data$tripduration, .9)
+
+prop.table(table(nyc.data$usertype))
+
+prop.table(table(nyc.data$gender))
+
+prop.table(xtabs(~usertype+gender, data=nyc.data), margin=2)
+```
+
+```{r}
+start_loc <- unique(nyc.data[,c('Slon', 'Slat', "Sstid", 'Sstname')]) %>% rename(Longitude = Slon, Latitude = Slat, Stid = Sstid, Stname=Sstname)
+end_loc <- unique(nyc.data[,c('Elon', 'Elat', 'Estid', 'Estname')]) %>% rename(Longitude = Elon, Latitude = Elat, Stid = Estid, Stname=Estname)
+station_loc <- unique(rbind(start_loc, end_loc))
+rm(start_loc, end_loc)
+
+
+m1 <- 
+leaflet(station_loc) %>%
+  addProviderTiles(providers$Stamen.TonerLines, group = "Basemap") %>%
+  addProviderTiles(providers$Stamen.TonerLite, group = "Basemap") %>%
+  addMarkers(label = paste(station_loc$Stid, station_loc$Longitude, station_loc$Latitude, station_loc$Stname, sep=",")
+  )
+
+widgetframe::frameWidget(m1)
+```
+
+```{r}
+(eightDstations <- station_loc[grep(glob2rx("8D*"), station_loc$Stname),]$Stid) # these are the outliers stations in MTL
+nyc.data[which.max(nyc.data$tripduration), c('Sstname', 'Estname','tripduration')]
+(Bikedepots <- station_loc[grep(glob2rx("*CBS*"), station_loc$Stname),]$Stid) # parenthesis at the start is to print
 ```
 ```{r}
-test <- here("lab3", "data", "201806-citibike-tripdata.csv")
-test <- read_csv(test)
+nyc.data %>%
+  select(Sstid, Estid, tripduration) %>%
+  filter(tripduration >= 60*60*2) %>%
+  group_by(Sstid, Estid) %>%
+  summarise(triptots = n(),
+            averagetripdur = mean(tripduration)
+            ) %>%
+  arrange(desc(triptots))
 
-test2 <- here("")
+station_loc <- station_loc[!(station_loc$Stid %in% Bikedepots |  station_loc$Stid %in% eightDstations), ]
+nyc.data <-  nyc.data[nyc.data$Estid %in% station_loc$Stid & nyc.data$Sstid %in% station_loc$Stid, ]
+diffdesttrips <- nyc.data[nyc.data$Estid != nyc.data$Sstid, ]
+c(nrow(nyc.data), nrow(diffdesttrips))
+nrow(station_loc)
+
+summary(diffdesttrips)
+
+```
+
+```{r, EXERCISE 1}
+
+# explore for patterns in high values
+test <- diffdesttrips %>% filter(tripduration > 10000)
+test$starttime <- mdy(test$starttime)
+test$timediff <- test$stoptime - test$starttime 
+
 ```
 
