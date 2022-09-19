@@ -168,24 +168,15 @@ ggplot(trip.night) +
    scale_y_continuous("", breaks=NULL)+
    theme(panel.background = element_rect(fill='white',colour='white'), legend.position = "none")  + coord_fixed()
 
-
+# takes a long time to plot, and doesn't reveal much. Subscribers and customers use bikes throughout the day
 ggplot(trip.morn) +
   geom_point(aes(x=Slon, y=Slat), alpha=.5) +  
    scale_size_continuous(range= c(.1,2))+
-  labs(title = "Bike trips in morning")
+  labs(title = "Bike trips in morning")+
   facet_grid(usertype ~ hr) +  # Compare subscribers and customers
    scale_x_continuous("", breaks=NULL)+
    scale_y_continuous("", breaks=NULL)+
    theme(panel.background = element_rect(fill='white',colour='white'), legend.position = "none")  + coord_fixed()
-
-# takes a long time to plot, and doesn't reveal much. Subscribers and customers use bikes throughout the day
-# ggplot(trip.day) +
-#   geom_point(aes(x=Slon, y=Slat), alpha=.5) +  
-#    scale_size_continuous(range= c(.1,2))+
-#   facet_grid(usertype ~ hr) +  # Compare subscribers and customers
-#    scale_x_continuous("", breaks=NULL)+
-#    scale_y_continuous("", breaks=NULL)+
-#    theme(panel.background = element_rect(fill='white',colour='white'), legend.position = "none")  + coord_fixed()
 
 
 ```
@@ -472,4 +463,138 @@ bg_pop %>% select(population, home_value) %>% plot(border=NA) # could also .[ , 
 
 ```
 
+```{r}
+plot(bg_pop["home_value"], breaks = "fisher", border='NA', main="Home Value")
+```
+```{r, EXERCISE 5}
+
+```
+
+```{r}
+summary(lengths(st_covers(bg_pop, station_loc)))
+bg_pop$numstations <- lengths(st_covers(bg_pop, station_loc))
+```
+
+```{r}
+ggplot(bg_pop) + 
+  geom_point(aes(x=home_value, y= numstations)) +
+  labs(x='Average Home Value', y='Number of Citi Bike stations')
+
+ggplot(bg_pop) + 
+  geom_point(aes(x=population, y= numstations)) +
+  labs(x='Population', y='Number of Citi Bike stations')
+
+ggplot(bg_pop[bg_pop$numstations > 0,]) + 
+  geom_boxplot(aes(x=factor(numstations), y= population)) +
+  labs(x='Number of Stations', y='Population')
+```
+
+```{r}
+numtrips <- diffdesttrips %>%
+  mutate(day_of_week = wday(starttime, label=TRUE, week_start=1),
+         hr = hour(starttime),
+         time_of_day = hr %>% cut(breaks=c(0,6,10,16,20,24), include.lowest = T, labels=c("Midnight - 6AM", "6AM - 10AM", "10AM - 4PM", "4PM - 8PM", "8PM - Midnight"))
+  ) %>%
+  group_by(Sstid, Estid, day_of_week, time_of_day, usertype) %>%
+  summarise(Slon = first(Slon),
+            Slat = first(Slat),
+            Elon = first(Elon),
+            Elat = first(Elat),
+            totaltrips = n(),
+            aveduration = mean(tripduration)
+  )
+
+numtrips <- st_as_sf(numtrips, coords = c('Slon', 'Slat'), crs = 4326)
+
+#THIS IS NOT RUNNING, TOO MUCH MEMORY
+# bg_numtrips <- st_join(numtrips, bg_pop, join=st_covered_by) %>% 
+#               group_by(day_of_week, time_of_day, usertype, GEOID10) %>% 
+#               summarise(
+#                 totaltrips = sum(totaltrips),
+#                 population = first(population),
+#                 home_value = first(home_value)
+#               )
+#   
+#                      
+#                
+#   
+# ggplot(bg_numtrips) + 
+#   geom_smooth(aes(x=population, y= totaltrips, color=usertype)) +
+#   facet_grid(~day_of_week)+
+#   labs(x='Population', y='Trip Starts', colour= 'User Type') + 
+#   theme_bw() + 
+#   theme(legend.position = 'bottom')
+
+numtrips <- diffdesttrips  %>%
+  group_by(Sstid) %>%
+  summarise(Slon = first(Slon),
+            Slat = first(Slat),
+            totaltrips = n(),
+            aveduration = median(tripduration, na.rm=TRUE)
+  ) %>%
+  st_as_sf(coords = c('Slon', 'Slat'), crs = 4326)
+
+bg_trips <- 
+  st_join(bg_pop, numtrips, join=st_covers)
+
+
+g1 <- bg_trips %>%
+      filter(!is.na(.$totaltrips)) %>%
+      mutate(home_value = home_value/1000) %>%
+  ggplot() +
+  geom_jitter(aes(x = home_value, y = totaltrips), alpha=.5) +
+  geom_rug(aes(x= home_value), alpha=.3)+
+  xlim(0,2000)+
+  geom_smooth(aes(x= home_value, y=totaltrips), method='loess')+
+  ylab('Total Number of Trips') +
+  xlab('')+
+  theme(axis.text.x = element_blank(), 
+        axis.ticks.x= element_blank())
+
+g2 <- bg_trips %>%
+       mutate(notripsbg = factor(is.na(bg_trips$totaltrips), labels=c('No trips', 'Atleast 1 trip')),
+                home_value = home_value/1000) %>%
+        ggplot()+
+        xlim(0,2000)+
+        geom_density(aes(x=home_value, color=notripsbg))  +
+        xlab('Block Group Median Home Value in 1000s') +
+        ylab('Density') +
+        theme(legend.position = 'bottom',
+              legend.title = element_blank())
+
+
+
+library(gtable)
+library (grid)
+
+g3 <- ggplotGrob(g1)
+g4 <- ggplotGrob(g2)
+g <- rbind(g3, g4, size = "last")
+g$widths <- unit.pmax(g3$widths, g4$widths)
+grid.newpage()
+grid.draw(g)
+```
+
+
+
+```{r}
+g1 <- bg_trips %>% mutate(aveduration = aveduration/60) %>%
+  ggplot() + 
+  geom_sf(aes(fill=aveduration), lwd=0) +
+  scale_fill_gradient2() +
+  labs(fill= '', title="Median Trip Duration") +
+  theme_bw() + 
+  theme(legend.position = 'bottom')
+  
+g2 <- bg_trips%>%
+  ggplot() + 
+  geom_sf(aes(fill=totaltrips), lwd=0) +
+  scale_fill_gradient2() +
+  labs(title= 'Number of trip starts', fill="") +
+  theme_bw() + 
+  theme(legend.position = 'bottom') 
+
+library(gridExtra)
+grid.arrange(g1,g2, ncol=2)
+```
 
