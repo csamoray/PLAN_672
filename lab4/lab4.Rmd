@@ -1,0 +1,58 @@
+---
+title: "lab4"
+author: "Chris Samoray"
+date: "2022-09-28"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(tidyverse)
+library(sf)
+library(tidycensus)
+library(tmap)
+library(widgetframe)
+```
+
+```{r}
+# api.key <- "4d4d3ac0ac8c8c9e453b1a04d3cdffeac7c1de9b" # use census_api_key() to embed API in computer
+# census_api_key("4d4d3ac0ac8c8c9e453b1a04d3cdffeac7c1de9b", install = T)
+
+# census geographies: block < block groups < tracts < counties < states < divisions < regions
+  # tracts might be best for longitudinal analysis bc they don't change very much, but they do change. Counties are more stable
+```
+
+```{r}
+povrate17 <- 
+    get_acs(geography = "tract", variables = "B17001_002",  summary_var = 'B17001_001',state = "NC", geometry = TRUE, year = 2017) %>%
+        rename(population = summary_est) %>%
+  filter(population>0)%>%
+  mutate(pov_rate = estimate/population) %>%
+  select(GEOID, NAME, population, pov_rate) #geoid can be picked apart to determine census geography
+```
+```{r}
+tmap_mode("view") # interactive viewing
+
+m1 <-
+povrate17 %>%
+  mutate(pov_rate = pov_rate*100) %>%
+  st_transform(crs=4326) %>% # EPSG Code for WGS84
+tm_shape() +
+  tm_polygons("pov_rate",
+    title = "Poverty Rate",    # This renames the title of th variable in the legend.
+    style = "cont",# could also be "quantile; and could add a line palette = "seq"
+    border.col = NULL,
+    legend.format=list(fun=function(x) paste0(formatC(x, digits=0, format="f"), "%"))) + # This formats the numbers in the legend
+  tm_view(view.legend.position = c("right", "top")) +
+  tm_tiles(leaflet::providers$Stamen.TonerLines, alpha=.5) +
+  tm_tiles(leaflet::providers$Stamen.TonerLabels, alpha=.5)
+
+# frameWidget(tmap_leaflet(m1))
+```
+
+```{r, QUESTION 1}
+
+# margin of error estimates of poverty rate
+pov.moe <- povrate17 %>% group_by(GEOID) %>% mutate(pov.moe = moe_(pov_rate))
+
+
