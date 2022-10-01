@@ -1,0 +1,227 @@
+---
+title: "Most Crashes Occur on Thursdays in July in New York City"
+author: "Chris Samoray"
+date: "2022-09-28"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = F, message = F, warning = F)
+
+library(tidyverse)
+library(here)
+library(lubridate)
+library(ggplot2)
+library(leaflet)
+```
+
+```{r, load and clean data, include=F}
+nyc.crash <- read_csv(here("hw3", "data", "Motor_Vehicle_Collisions_Crashes.csv"))
+
+glimpse(nyc.crash)
+head(nyc.crash)
+names(nyc.crash)
+
+# keep only observations w/geographic info
+nyc.crash.slim <- nyc.crash %>% filter(!is.na(LATITUDE) & !is.na(LONGITUDE))
+
+# there are some obviously wrong longlats; filter
+summary(nyc.crash$LONGITUDE)
+summary(nyc.crash$LATITUDE)
+
+nyc.crash.slim <- nyc.crash.slim %>% filter(LATITUDE > 40 & LATITUDE < 41 & LONGITUDE < -73 & LONGITUDE > -75)
+                                            
+
+# get rid of space in variable names
+names(nyc.crash.slim) <- gsub(" ", "_", names(nyc.crash.slim)) 
+
+# make data variable a date
+nyc.crash.slim$CRASH_DATE <- mdy(nyc.crash.slim$CRASH_DATE)
+
+```
+
+## Crashes by Borough
+
+New York City has five boroughs: Bronx, Brooklyn, Manhattan, Queens and Staten Island. Crash data for the city shows a fluctuation in crashes throughout the year. All boroughs see a dip during the winter months and an increase during the summer months, although Staten Island is nearly constant throughout the year. Brooklyn has the highest number of crashes, followed by Queens, Manhattan, Bronx and Staten Island.
+```{r, crashes by borough}
+# first determine which borough has most crashes
+# observations with NA borough were removed, but they can be geolocated and appear in subsequent analyses
+nyc.crash.slim %>% group_by(BOROUGH) %>% filter(!is.na(BOROUGH)) %>% summarise(crash_count = n()) %>% 
+  ggplot(aes(x=reorder(BOROUGH, crash_count), y = crash_count)) +
+  geom_bar(stat = "identity") +
+  coord_flip() +
+  labs(title = "Traffic Collisions by Borough in NYC", y = "Number of Collisions", x = "Borough")+
+  theme_classic()
+
+# how does crash fluctuate over year?
+nyc.crash.slim <- nyc.crash.slim %>% mutate(month = month(CRASH_DATE))
+
+g1 <- nyc.crash.slim %>% group_by(BOROUGH, month) %>% filter(!is.na(BOROUGH)) %>% 
+  summarise(crash_count = n()) %>% 
+  ggplot(aes(x = month, y = crash_count)) +
+  labs(y ="Crash Count", title = "Crashes by Borough Across the Year")+
+  geom_smooth(method = "loess", se = F)+
+  scale_x_continuous(name="Month", breaks = 1:12)+
+  theme_bw()+
+  theme()
+
+g1+facet_wrap(~BOROUGH)
+```
+
+## Brooklyn top 100 Crash Sites
+
+The analysis focuses on Brooklyn, the borough with the highest crash numbers. July is the month with the highest crash number, seeing 38,022 crashes. The top 100 locations were subset. These crash locations tend to be along some of the main throughways, such as Atlantic Avenue.
+
+```{r}
+brooklyn.df <-  nyc.crash.slim %>% filter(BOROUGH == "BROOKLYN")  
+
+brooklyn.df %>% 
+  group_by(month) %>% 
+  summarise(crashes.month = n()) %>% 
+  arrange(desc(crashes.month)) # July is month with most crashes
+
+table(brooklyn.df$month)
+
+brooklyn.loc <- brooklyn.df %>% filter(month == "7") %>% 
+  group_by(LOCATION) %>% 
+  summarise(crash = n(),
+            lat = first(LATITUDE),
+            long = first(LONGITUDE)) %>% 
+  top_n(100, crash) # 100 locs with most crashes in July
+
+leaflet(brooklyn.loc) %>% 
+  addCircles(group = "LOCATION",
+             radius = (brooklyn.loc$crash * 10)) %>% 
+  addProviderTiles(providers$Stamen.TonerLines, group = "Basemap") %>%
+  addProviderTiles(providers$Stamen.TonerLite, group = "Basemap")
+```
+
+In July, Saturday during the 10AM-4PM hour experiences the most crashes. 
+
+```{r}
+locs <- brooklyn.loc$LOCATION
+
+brooklyn.car <- brooklyn.df %>% filter(LOCATION %in% locs)
+
+brooklyn.car <- brooklyn.car %>% 
+  mutate(day = wday(CRASH_DATE),
+         hr = hour(CRASH_TIME),
+         time.of.day = hr %>% cut(breaks=c(0,6,10,16,20,24), include.lowest = TRUE, labels=c("Midnight - 6AM", "6AM - 10AM", "10AM - 4PM", "4PM - 8PM", "8PM - Midnight")))
+
+table(brooklyn.car$time.of.day) # 10AM-4PM has most crashes
+table(brooklyn.car$day) # day 6 has most
+
+ggplot(brooklyn.car) +
+  labs(title = "Brooklyn Crash Time and Day of top 100 Crash Sites")+
+  geom_point(aes(x=LONGITUDE, y=LATITUDE), alpha=.2) +
+  facet_grid(time.of.day ~ day) +  
+   scale_x_continuous("", breaks=NULL)+
+   scale_y_continuous("", breaks=NULL)+
+   theme(panel.background = element_rect(fill='white',colour='white'), legend.position = "none")  + coord_fixed()
+```
+
+## Injuries and Fatalities
+
+Although no deaths occurred on Saturday in July in Brooklyn, injuries resulted. The most injuries were to motorists, followed by pedestrians and cyclists. In total, 95 injuries occurred on Saturdays in July. During the entire month of July, Brooklyn had 746 crash injuries. There was 1 pedestrian fatality.
+```{r}
+brooklyn.most <- brooklyn.car %>% filter(month == "7" & day == "6")
+
+#most crash day, hr, month
+per.inj <- brooklyn.most$NUMBER_OF_PERSONS_INJURED
+per.kill <- brooklyn.most$NUMBER_OF_PERSONS_KILLED
+
+ped.inj <- brooklyn.most$NUMBER_OF_PEDESTRIANS_INJURED
+ped.kill <- brooklyn.most$NUMBER_OF_PEDESTRIANS_KILLED
+
+cyc.inj <- brooklyn.most$NUMBER_OF_CYCLIST_INJURED
+cyc.kill <- brooklyn.most$NUMBER_OF_CYCLIST_KILLED
+
+motor.inj <- brooklyn.most$NUMBER_OF_MOTORIST_INJURED
+motor.kill <- brooklyn.most$NUMBER_OF_MOTORIST_KILLED
+
+df <- as.data.frame(cbind(per.inj, ped.inj, cyc.inj, motor.inj, per.kill, ped.kill, cyc.kill, motor.kill))
+
+inj.df <- as.data.frame(t(df %>% summarise(per.inj = sum(per.inj),
+                                           ped.inj = sum(ped.inj),
+                                           cyc.inj = sum(cyc.inj),
+                                           motor.inj = sum(motor.inj))))
+
+inj.df$type <- rownames(inj.df)
+
+inj.df$type <- factor(inj.df$type, levels = c("per.inj", "motor.inj", 
+                                              "ped.inj", "cyc.inj"))
+
+kill.df <- as.data.frame(t(df %>% summarise(per.kill = sum(per.kill),
+                           ped.kill = sum(ped.kill),
+                           cyc.kill = sum(cyc.kill),
+                           motor.kill = sum(motor.kill))))
+
+kill.df$type <- rownames(kill.df)
+
+kill.df$type <- factor(kill.df$type, levels = c("per.kill", "ped.kill", "motor.kill", 
+                                               "cyc.kill"))
+
+ggplot(inj.df) +
+  labs(title = "Brooklyn Crash Injuries on Saturdays in July", y = "Count", x = "Injury Type")+
+  geom_bar(aes(y = V1, fill = type, x = "type"), stat="identity", position = "dodge")+
+  scale_fill_manual("legend", values = c("per.inj" = "#006D2C", "motor.inj" = "#08519C", "ped.inj" = "#4292C6", "cyc.inj" = "#9ECAE1")) +
+  theme_classic()
+
+```
+
+```{r}
+brooklyn.most <- brooklyn.car %>% filter(month == "7")
+
+#most crash day, hr, month
+per.inj <- brooklyn.most$NUMBER_OF_PERSONS_INJURED
+per.kill <- brooklyn.most$NUMBER_OF_PERSONS_KILLED
+
+ped.inj <- brooklyn.most$NUMBER_OF_PEDESTRIANS_INJURED
+ped.kill <- brooklyn.most$NUMBER_OF_PEDESTRIANS_KILLED
+
+cyc.inj <- brooklyn.most$NUMBER_OF_CYCLIST_INJURED
+cyc.kill <- brooklyn.most$NUMBER_OF_CYCLIST_KILLED
+
+motor.inj <- brooklyn.most$NUMBER_OF_MOTORIST_INJURED
+motor.kill <- brooklyn.most$NUMBER_OF_MOTORIST_KILLED
+
+df <- as.data.frame(cbind(per.inj, ped.inj, cyc.inj, motor.inj, per.kill, ped.kill, cyc.kill, motor.kill))
+
+inj.df <- as.data.frame(t(df %>% summarise(per.inj = sum(per.inj),
+                                           ped.inj = sum(ped.inj),
+                                           cyc.inj = sum(cyc.inj),
+                                           motor.inj = sum(motor.inj))))
+
+inj.df$type <- rownames(inj.df)
+
+inj.df$type <- factor(inj.df$type, levels = c("per.inj", "motor.inj", 
+                                              "ped.inj", "cyc.inj"))
+
+kill.df <- as.data.frame(t(df %>% summarise(per.kill = sum(per.kill),
+                           ped.kill = sum(ped.kill),
+                           cyc.kill = sum(cyc.kill),
+                           motor.kill = sum(motor.kill))))
+
+kill.df$type <- rownames(kill.df)
+
+kill.df$type <- factor(kill.df$type, levels = c("per.kill", "ped.kill", "motor.kill", 
+                                               "cyc.kill"))
+
+ggplot(inj.df) +
+  labs(title = "Brooklyn Crash Injuries in July", y = "Count", x = "Injury Type")+
+  geom_bar(aes(y = V1, fill = type, x = "type"), stat="identity", position = "dodge")+
+  scale_fill_manual("legend", values = c("per.inj" = "#006D2C", "motor.inj" = "#08519C", "ped.inj" = "#4292C6", "cyc.inj" = "#9ECAE1")) +
+  theme_classic()
+
+ggplot(kill.df) +
+  labs(title = "Brooklyn Crash Fatalities in July", y = "Count", x = "Fatality Type")+
+  geom_bar(aes(y = V1, fill = type, x = "type"), stat="identity", position = "dodge") +
+    scale_fill_manual("legend", values = c("per.kill" = "#006D2C", "ped.kill" = "#08519C", "motor.kill" = "#4292C6", "cyc.kill" = "#9ECAE1")) +
+  theme_classic()
+
+```
+
+## Conclusion
+
+Overall, Brooklyn is the borough with the highest crashes in New York City. Most occur during July. Possibly, this could be related to population density or commuting habits. It is interesting that Saturday, compared with a working day, has the most crashes. Perhaps people choose to use vehicles rather than public transit on weekends when they do not go to work. Future study could look at associations with wealth, tourism, and commuting habits.
+
