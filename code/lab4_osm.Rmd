@@ -1,0 +1,42 @@
+---
+title: "lab4_osm"
+author: "Chris Samoray"
+date: "2022-10-12"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+library(osmdata)
+library(sf)
+library(tidyverse)
+library(leaflet)
+```
+
+```{r}
+data_from_osm_df <- opq (getbb ("Durham, North carolina")) %>% #gets bounding box
+  add_osm_feature(key = "amenity", value = "restaurant") %>% #searches for restaurants
+  osmdata_sf() #download OSM data as sf
+
+#select name and geometry from point data for restaurants
+cafe_osm <- data_from_osm_df$osm_points %>% #select point data from downloaded OSM data
+  select(name, geometry) #for now just selecting the name and geometry to plot
+
+#create a plot in leaflet
+m1 <-
+leaflet() %>%
+  addProviderTiles("CartoDB.Positron") %>%
+  addCircles(data = cafe_osm)
+```
+
+```{r, raleigh}
+data_from_osm_df <- opq (getbb ("Raleigh, North carolina")) %>% 
+  add_osm_feature(key = "amenity", value = "restaurant") %>% 
+  osmdata_sf() 
+
+#select name and geometry from point data for restaurants
+cafe_osm <- data_from_osm_df$osm_points %>% 
+  select(name, geometry) #
+```
+

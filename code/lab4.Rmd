@@ -1,0 +1,168 @@
+---
+title: "lab44"
+author: "Chris Samoray"
+date: "2022-09-28"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+options(tigris_use_cache = TRUE)
+
+library(tidyverse)
+library(sf)
+library(tidycensus)
+library(ggplot2)
+library(tmap)
+library(tmaptools) # shiny & shinyjs, then call palleteexplorer()
+library(widgetframe)
+```
+
+```{r}
+# api.key <- "" # use census_api_key() to embed API in computer
+# census_api_key("", install = T)
+
+# census geographies: block < block groups < tracts < counties < states < divisions < regions
+  # tracts might be best for longitudinal analysis bc they don't change very much, but they do change. Counties are more stable
+```
+
+```{r}
+povrate17 <- 
+    get_acs(geography = "tract", variables = "B17001_002",  summary_var = 'B17001_001',state = "NC", geometry = TRUE, year = 2017) %>%
+        rename(population = summary_est) %>%
+  filter(population>0)%>%
+  mutate(pov_rate = estimate/population) %>% 
+  select(GEOID, NAME, population, pov_rate, moe) #geoid can be picked apart to determine census geography
+```
+
+```{r}
+tmap_mode("view") # interactive viewing
+
+m1 <-
+povrate17 %>%
+  mutate(pov_rate = pov_rate*100) %>%
+  st_transform(crs=4326) %>% # EPSG Code for WGS84
+tm_shape() +
+  tm_polygons("pov_rate",
+    title = "Poverty Rate",    # This renames the title of th variable in the legend.
+    style = "cont",# could also be "quantile; and could add a line palette = "seq"
+    border.col = NULL,
+    legend.format=list(fun=function(x) paste0(formatC(x, digits=0, format="f"), "%"))) + # This formats the numbers in the legend
+  tm_view(view.legend.position = c("right", "top")) +
+  tm_tiles(leaflet::providers$Stamen.TonerLines, alpha=.5) +
+  tm_tiles(leaflet::providers$Stamen.TonerLabels, alpha=.5)
+
+tmap_leaflet(m1)
+
+m1 <- 
+povrate17 %>%
+  mutate(pov_rate = pov_rate*100) %>%
+  st_transform(crs=4326) %>%
+tm_shape() +
+  tm_polygons("pov_rate",
+    title = "Poverty Rate",
+    style = "quantile",
+    palette = "seq",
+    border.col = NULL,
+    legend.format=list(fun=function(x) paste0(formatC(x, digits=0, format="f"), "%"))) + # This formats the numbers in the legend
+  tm_view(view.legend.position = c("right", "top")) +
+  tm_tiles(leaflet::providers$Stamen.TonerLines, alpha=.5) +
+  tm_tiles(leaflet::providers$Stamen.TonerLabels, alpha=.5)
+
+tmap_leaflet(m1)
+```
+
+```{r, QUESTION 1}
+
+# margin of error estimates of poverty rate
+m1 <- 
+povrate17 %>%
+  mutate(pov_rate = pov_rate*100) %>%
+  st_transform(crs=4326) %>%
+tm_shape() +
+  tm_polygons("moe",
+    title = "Margin of Error in Poverty Rate",
+    style = "cont",
+    border.col = NULL,
+    legend.format=list(fun=function(x) paste0(formatC(x, digits=0, format="f"), "%"))) + # This formats the numbers in the legend
+  tm_view(view.legend.position = c("right", "top")) +
+  tm_tiles(leaflet::providers$Stamen.TonerLines, alpha=.5) +
+  tm_tiles(leaflet::providers$Stamen.TonerLabels, alpha=.5)
+
+tmap_leaflet(m1)
+```
+
+```{r, Question 2}
+data("fips_codes") # This is a dataset inside tidycensus package
+
+states.unique <- unique(fips_codes$state_code)
+
+
+# states.df <- unique(fips_codes$state_code)[1:5] %>%  # We extract unique state FIPS codes and subset the first 10 
+#    map(function(x){get_acs(geography = "tract", variables = "B17001_002",  summary_var = 'B17001_001',
+#             state = x, geometry = TRUE, year = 2017)}) %>% #Note the use of argument x. We are simply applying the custom built function for each of the 10 states
+#   reduce(rbind) %>% # The list of 10 elements is reduced using 'row binding' to create one single tibble. read up on these map and reduce functions in purrr. They are key to functional programming paradigm
+#   rename(population = summary_est) %>%
+#   filter(population>0)%>%
+#   mutate(pov_rate = estimate/population) %>%
+#   select(GEOID, NAME, population, pov_rate) 
+
+# take states data
+states.df <- unique(fips_codes$state_code)[1:5] %>%  # We extract unique state FIPS codes and subset the first 10 
+   map(function(x){get_acs(geography = "state", variables = "B17001_002",  summary_var = 'B17001_001',
+            state = x, geometry = TRUE, year = 2017)}) %>% 
+  reduce(rbind) %>%
+  rename(population = summary_est) %>% 
+  mutate(pov_rate = estimate/population,
+         center = st_centroid(geometry)) %>% 
+  st_transform(crs=4326)
+
+
+
+# map of all US
+tm_shape(states.df)+
+  tm_bubbles("pov_rate",
+             style = "quantile",
+             size = .5, 
+             palette = "Blues")+
+  tm_view(view.legend.position = c("right", "top")) +
+  tm_tiles(leaflet::providers$Stamen.TonerLines, alpha=.5) +
+  tm_tiles(leaflet::providers$Stamen.TonerLabels, alpha=.5)
+
+ # palette_explorer()
+
+```
+
+```{r}
+#Labour Force
+lf_m <- paste("B23001_", formatC(seq(4,67,7), width=3, flag="0"), "E", sep="") # Males. Check to make sure these are indeed the variables representing the labour force for men in different age categories
+lf_f <- paste("B23001_", formatC(seq(90,153,7), width=3, flag="0"), "E", sep="") # Females
+
+lf_t <- # create variable names above, load them here
+  get_acs(geography='tract', variables = c(lf_m, lf_f), state="NC", year=2017)%>% 
+  group_by(GEOID) %>%
+  summarize(lf_est = sum(estimate, na.rm=T))
+
+
+#Unemployed
+unemp_m <- paste("B23001_", formatC(seq(8,71,7), width=3, flag="0"), "E", sep="")
+unemp_f <- paste("B23001_", formatC(seq(94,157,7), width=3, flag="0"), "E", sep="")
+
+unemp_t <- 
+  get_acs(geography='tract', variables = c(unemp_m, unemp_f), state="NC", year=2017)%>%
+  group_by(GEOID) %>%
+  summarize(unemp_est = sum(estimate, na.rm=T))
+
+# joining labor force and unemployment data
+unemprate17 <-
+  left_join(lf_t, unemp_t, by=c('GEOID'='GEOID')) %>%  #Look up joining tables. It is incredibly useful to merge data
+  filter(lf_est >0) %>%
+  mutate(unemp_rate = unemp_est/lf_est)
+```
+
+```{r}
+ggplot(unemprate17, aes(unemp_rate))+
+       labs(title = "Nationwide Unemployment Rate", x = "Unemployement Rate")+
+  geom_density()
+```
+
