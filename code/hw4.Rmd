@@ -1,0 +1,158 @@
+---
+title: "hw4"
+author: "Chris Samoray"
+date: "2022-10-12"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+library(tidyverse)
+library(rvest)
+library(leaflet)
+library(xml2)
+```
+
+# Raleigh Housing Walking Scores to Dog Parks
+
+```{r, scrape}
+
+# create link for houses in Raleigh that welcome dogs on CL
+location <- 'raleigh'
+bedrooms <- 3
+bathrooms <- 2
+min_sqft <- 1000
+pets_dog <- 1
+
+baseurl <- paste0("https://", location, ".craigslist.org/search/apa")
+
+# Build out the query
+queries <- c("?")
+queries <- c(queries, paste0("bedrooms=", bedrooms))
+queries <- c(queries, paste0("bathrooms=", bathrooms))
+queries <- c(queries, paste0("minSqft=", min_sqft))
+queries <- c(queries, paste0("pets_dog=", pets_dog))
+
+query_url <- paste0(baseurl,queries[1], paste(queries[2:length(queries)], collapse = "&"))
+```
+
+```{r}
+raw_query <- xml2::read_html(query_url)
+
+raw_ads <- html_elements(raw_query, "li.result-row")
+
+raw_ads %>% head()
+
+ids <-
+  raw_ads %>%
+  html_attr('data-pid')
+
+titles <-
+  raw_ads %>%
+   html_element("a.result-title") %>% #only elements of a that are of class_row
+   html_text()
+
+prices <-
+   raw_ads %>% 
+     html_element("span.result-price") %>% # only elements of span
+     html_text() %>%
+     str_replace_all("\\$|,+", "") %>% # This is a function that includes a regular expression to extract a special symbol $ and , and replace them with nothing.
+     as.numeric()
+
+dates <-
+  raw_ads%>%
+  html_element('time') %>%
+  html_attr('datetime')
+
+locales <-
+  raw_ads %>%
+  html_element(".result-hood") %>% # all elements of result hood
+  html_text() 
+```
+```{r}
+
+results.count <- read_html(query_url) %>% html_node("span.totalcount") %>% html_text() # total page count
+
+
+loopn <- seq(120, results.count, 120) # from 120 to 600 by 120; s = goes by 120 on CL
+
+craigslist <- data.frame()
+
+for(i in loopn){
+ Sys.sleep(10) #delays each query by seconds
+ queriesloop <- queries
+ 
+ queriesloop <- c(queries, paste0("s=", i))
+ query_url <- paste0(baseurl,queriesloop[1], paste(queriesloop[2:length(queriesloop)], collapse = "&"))
+
+ raw_query <- xml2::read_html(query_url)
+
+raw_ads <- html_elements(raw_query, "li.result-row")
+raw_ads %>% head()
+
+ids <-
+  raw_ads %>%
+  html_attr('data-pid')
+
+titles <-
+  raw_ads %>%
+   html_element("a.result-title") %>% #only elements of a that are of class_row
+   html_text()
+
+prices <-
+   raw_ads %>%
+     html_element("span.result-price") %>% # only elements of span
+     html_text() %>%
+     str_replace_all("\\$|,+", "") %>% # This is a function that includes a regular expression to extract a special symbol $ and , and replace them with nothing.
+     as.numeric()
+
+dates <-
+  raw_ads%>%
+  html_element('time') %>%
+  html_attr('datetime')
+
+locales <-
+  raw_ads %>%
+  html_element(".result-hood") %>% # all elements of result hood
+  html_text()
+
+footage <-
+  raw_ads %>%
+  html_element(".result-hood") %>%
+  html_text()
+
+
+bedrooms <-
+  raw_ads %>%
+  html_element(".result-hood") %>%
+  html_text()
+
+
+
+urls <-
+  raw_ads %>%
+  html_node(".result-title") %>%
+  html_attr("href")
+
+
+# latlongs <-
+#   map_dfr(urls, function(x){ # reads all urls
+#     xml2::read_html(x) %>%
+#       html_node("#map") %>% # from <div id="map"
+#       html_attrs() %>% # takes attributes from map
+#       t() %>% # transpose
+#       as_tibble() %>% # make df
+#       select_at(vars(starts_with("data-"))) %>% # selects variables starting with "data-"
+# #       mutate_all(as.numeric)
+#   }
+#   )
+
+  craigslistloop <- data.frame(ids, titles, dates, locales, urls, prices)
+
+  # RBIND POSTS IN EACH LOOP TO THE MASTER CRAIGSLIST DATA FRAME
+  craigslist <- rbind(craigslist, craigslistloop)
+ 
+}
+```
+
