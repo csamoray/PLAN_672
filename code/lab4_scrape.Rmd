@@ -6,7 +6,7 @@ output: html_document
 ---
 
 ```{r setup, include=FALSE}
-knitr::opts_chunk$set(echo = TRUE)
+knitr::opts_chunk$set(echo = F)
 
 library(tidyverse)
 library(rvest)
@@ -89,7 +89,7 @@ locales <-
   html_text() 
 ```
 
-```{r, exercise}
+```{r, exercisea}
 # node is used to select the main element; attribute select text within the node
 
 # a dot in the node is used to select a span class; a dot is not needed to select time class
@@ -142,7 +142,7 @@ m1
 # CL only displays 120 results/page. Can loop through to include all pages. But include a delay using Sys.sleep
 ```
 
-```{r, EXERCISE}
+```{r, EXERCISEb}
 
 # https://medium.com/swlh/exploring-san-francisco-apartments-on-craigslist-with-r-43e5fa38a77b
 

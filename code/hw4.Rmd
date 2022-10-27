@@ -1,95 +1,72 @@
 ---
-title: "hw4"
+title: ""
 author: "Chris Samoray"
-date: "2022-10-12"
+date: "2022-10-19"
 output: html_document
 ---
 
 ```{r setup, include=FALSE}
 knitr::opts_chunk$set(echo = TRUE)
 
+library(here)
 library(tidyverse)
 library(rvest)
 library(leaflet)
 library(xml2)
+library(osmdata)
+library(sf)
+library(ggplot2)
+library(reshape2)
 ```
 
-# Raleigh Housing Walking Scores to Dog Parks
 
-```{r, scrape}
+
+```{r, create url, eval = F, include=FALSE}
 
 # create link for houses in Raleigh that welcome dogs on CL
 location <- 'raleigh'
-bedrooms <- 3
-bathrooms <- 2
-min_sqft <- 1000
+search_distance <- 15
+postal <- 27601 # downtown
+bedrooms <- 1
+bathrooms <- 1
+min_sqft <- 750
 pets_dog <- 1
 
 baseurl <- paste0("https://", location, ".craigslist.org/search/apa")
 
 # Build out the query
 queries <- c("?")
+
 queries <- c(queries, paste0("bedrooms=", bedrooms))
 queries <- c(queries, paste0("bathrooms=", bathrooms))
 queries <- c(queries, paste0("minSqft=", min_sqft))
 queries <- c(queries, paste0("pets_dog=", pets_dog))
+queries <- c(queries, paste0("postal=", postal))
+queries <- c(queries, paste0("search_distance=", search_distance))
 
 query_url <- paste0(baseurl,queries[1], paste(queries[2:length(queries)], collapse = "&"))
 ```
 
-```{r}
-raw_query <- xml2::read_html(query_url)
-
-raw_ads <- html_elements(raw_query, "li.result-row")
-
-raw_ads %>% head()
-
-ids <-
-  raw_ads %>%
-  html_attr('data-pid')
-
-titles <-
-  raw_ads %>%
-   html_element("a.result-title") %>% #only elements of a that are of class_row
-   html_text()
-
-prices <-
-   raw_ads %>% 
-     html_element("span.result-price") %>% # only elements of span
-     html_text() %>%
-     str_replace_all("\\$|,+", "") %>% # This is a function that includes a regular expression to extract a special symbol $ and , and replace them with nothing.
-     as.numeric()
-
-dates <-
-  raw_ads%>%
-  html_element('time') %>%
-  html_attr('datetime')
-
-locales <-
-  raw_ads %>%
-  html_element(".result-hood") %>% # all elements of result hood
-  html_text() 
-```
-```{r}
+```{r, scrape CL, eval = F, include=FALSE}
 
 results.count <- read_html(query_url) %>% html_node("span.totalcount") %>% html_text() # total page count
 
 
-loopn <- seq(120, results.count, 120) # from 120 to 600 by 120; s = goes by 120 on CL
+loopn <- seq(0, results.count, 120) # from 0 to results max by 120; s = goes by 120 on CL
 
 craigslist <- data.frame()
 
 for(i in loopn){
- Sys.sleep(10) #delays each query by seconds
+ Sys.sleep(90) #delays each query by seconds
  queriesloop <- queries
  
  queriesloop <- c(queries, paste0("s=", i))
- query_url <- paste0(baseurl,queriesloop[1], paste(queriesloop[2:length(queriesloop)], collapse = "&"))
+ query_url <- paste0(baseurl,queriesloop[1],   
+              paste(queriesloop[2:length(queriesloop)], collapse = "&"))
 
  raw_query <- xml2::read_html(query_url)
 
 raw_ads <- html_elements(raw_query, "li.result-row")
-raw_ads %>% head()
 
 ids <-
   raw_ads %>%
@@ -128,31 +105,276 @@ bedrooms <-
   html_element(".result-hood") %>%
   html_text()
 
-
-
 urls <-
   raw_ads %>%
   html_node(".result-title") %>%
   html_attr("href")
 
 
-# latlongs <-
-#   map_dfr(urls, function(x){ # reads all urls
-#     xml2::read_html(x) %>%
-#       html_node("#map") %>% # from <div id="map"
-#       html_attrs() %>% # takes attributes from map
-#       t() %>% # transpose
-#       as_tibble() %>% # make df
-#       select_at(vars(starts_with("data-"))) %>% # selects variables starting with "data-"
-# #       mutate_all(as.numeric)
-#   }
-#   )
+latlongs <-
+  map_dfr(urls, function(x){ # reads all urls
+    xml2::read_html(x) %>%
+      html_node("#map") %>% # from <div id="map"
+      html_attrs() %>% # takes attributes from map
+      t() %>% # transpose
+      as_tibble() %>% # make df
+      select_at(vars(starts_with("data-"))) %>% # selects variables starting with "data-"
+      mutate_all(as.numeric)
+  }
+  )
 
-  craigslistloop <- data.frame(ids, titles, dates, locales, urls, prices)
+  craigslistloop <- data.frame(ids, titles, dates, locales, urls, prices, latlongs)
 
   # RBIND POSTS IN EACH LOOP TO THE MASTER CRAIGSLIST DATA FRAME
   craigslist <- rbind(craigslist, craigslistloop)
  
 }
+
+names(craigslist)[names(craigslist) == "data.latitude"] <- "latitude"
+names(craigslist)[names(craigslist) == "data.longitude"] <- "longitude"
+
+craigslist <- craigslist %>% 
+ distinct()  %>% 
+ distinct(titles, .keep_all = TRUE) # 1268 t 785
+
+save(craigslist, 
+     file = here("data", "hw4", "craigslist_df.Rdata")) 
+
 ```
 
+```{r, echo=F}
+# load craigslist scraped data
+load(here("data", "hw4", "craigslist_df.Rdata"))
+```
+
+```{r, open street maps data, echo=F, warning=F}
+
+# download dog park data
+osm_dogparks <- opq(getbb ("Raleigh, North carolina")) %>% #bounding box
+  add_osm_feature(key = "leisure", value = "dog_park") %>% 
+  osmdata_sf() 
+
+dogpark_df<- osm_dogparks$osm_polygons %>% 
+         select(name, geometry) %>%  
+         mutate(center = st_centroid(geometry))
+
+# download park data
+osm_park <- opq(getbb ("Raleigh, North carolina")) %>% #bounding box
+  add_osm_feature(key = "leisure", value = "park") %>% 
+  osmdata_sf() 
+
+park_df<- osm_park$osm_polygons %>% 
+         select(name, geometry) %>%  
+         mutate(center = st_centroid(geometry))
+
+match_pattern <- paste(c("greenway", "green way"), collapse = "|") # pattern to match in grepl using two strings
+
+greenway_df <- park_df[grepl(match_pattern, park_df$name, ignore.case = T),]
+
+park_df <- park_df %>% filter(name != greenway_df$name) # rm greenways from parks_df
+
+# download pet shop data
+osm_petshop <- opq(getbb ("Raleigh, North carolina")) %>% #bounding box
+  add_osm_feature(key = "shop", value = "pet") %>% 
+  osmdata_sf() 
+
+petshop_df<- osm_petshop$osm_points %>% 
+         select(name, geometry) 
+
+# download pub data
+osm_pub <- opq(getbb ("Raleigh, North carolina")) %>% #bounding box
+  add_osm_feature(key = "amenity", value = "pub") %>% 
+  osmdata_sf() 
+
+pub_df<- osm_pub$osm_points %>% 
+         select(name, geometry) 
+
+# download cafe data
+osm_cafe <- opq(getbb ("Raleigh, North carolina")) %>% #bounding box
+  add_osm_feature(key = "amenity", value = "cafe") %>% 
+  osmdata_sf() 
+
+cafe_df<- osm_cafe$osm_points %>% 
+         select(name, geometry) 
+
+# download restaurant data
+osm_restaurant <- opq(getbb ("Raleigh, North carolina")) %>% #bounding box
+  add_osm_feature(key = "amenity", value = "restaurant") %>% 
+  osmdata_sf() 
+
+restaurant_df<- osm_restaurant$osm_points %>% 
+         select(name, geometry) 
+
+
+```
+
+```{r, dog park buffer, echo=F}
+# buffer to apartments
+apts_buffer <- st_as_sf(craigslist, coords = c("longitude", "latitude"), crs = 4326) %>% st_transform(crs = 32119) %>% st_buffer(dist = 1000) # 1 kilometer buffer
+
+# put all point of interest data in a list
+raleigh_poi <- list(dogpark_df, park_df, greenway_df, petshop_df, pub_df,
+                                  cafe_df, restaurant_df)
+
+# convert to same crs using looping with lapply and function
+raleigh_poi <- lapply(raleigh_poi, function(x) st_transform(x, crs = 32119))
+
+# how many pois apartment are nearby
+apts_buffer$num_dog_parks <- lengths(st_intersects(apts_buffer, raleigh_poi[[1]]))
+
+apts_buffer$num_parks <- lengths(st_intersects(apts_buffer, raleigh_poi[[2]]))
+
+apts_buffer$num_greenway <- lengths(st_intersects(apts_buffer, raleigh_poi[[3]]))
+
+apts_buffer$num_petshops <- lengths(st_intersects(apts_buffer, raleigh_poi[[4]]))
+
+apts_buffer$num_pubs <- lengths(st_intersects(apts_buffer, raleigh_poi[[5]]))
+
+apts_buffer$num_cafes <- lengths(st_intersects(apts_buffer, raleigh_poi[[6]]))
+
+apts_buffer$num_restaurants <- lengths(st_intersects(apts_buffer, raleigh_poi[[7]]))
+
+# limit to apartments within 1km of a dogpark
+apts_by_dogparks <- apts_buffer %>% filter(num_dog_parks != 0)
+```
+
+# Best Place to Live for Dog Owners in Raleigh
+
+According to a recent report in WalletHub, [Raleigh is the number 10 most friendly pet city](https://wallethub.com/edu/most-pet-friendly-cities/5562) in the United States. Among other characteristics, Raleigh scored high on "outdoor pet friendliness." This report creates a walking score for Raleigh dog owners. For the best walking potential, dog owners should consider living near downtown Raleigh or Carey, while eastern Raleigh offers far fewer outdoor walking amenities for dog owners.
+
+## Walking Score Construct
+
+The walking score measure for dog owners is based on the following features: dog parks, parks, greenways, petshops, pubs, cafes, and restaurants. Each of the seven variables received a weight of 1-7, with dog parks receiving the most weight (7) and restaurants the least (1). Dog parks are highly valued by dog owners, while restaurants often do not have space for dogs, but are still considered an amenity. Pubs and cafes sometimes have outside space for dogs and are therefore ranked higher than restaurants.
+
+One bedroom apartments with at least 750 square feet were scraped from Craig's List. Each apartment received a buffer of 1 kilometer and received a walking score based on the amenities within that buffer. The apartments were limited to only those within 1 kilometer of a dog park. The maximum walking score an apartment could receive, meaning it has the maximum number of amenities for each category, was 172. However, the scale was converted to 100.
+
+```{r, create weights, echo=F}
+
+# max count in each category
+max_vars <- apts_by_dogparks %>% as.data.frame %>% select(contains("num")) %>% summarise_if(is.numeric, max) %>% t() %>% as.data.frame()
+
+colnames(max_vars) <- "count"
+max_vars$weight <- c(7:1)
+max_vars$max_possible_score <- max_vars$count*max_vars$weight
+max_score <- sum(max_vars$max_possible_score) # is 172
+
+# scores are weighted; there are a total of 7 variables; dogparks receive the highest weight, which is 7 
+apts_by_dogparks$weighted_score <- apts_by_dogparks$num_dog_parks*7 + 
+            apts_by_dogparks$num_parks*6 +
+            apts_by_dogparks$num_greenway*5 +
+            apts_by_dogparks$num_petshops*4 +
+            apts_by_dogparks$num_pubs*3 +
+            apts_by_dogparks$num_cafes*2 +
+            apts_by_dogparks$num_restaurants*1
+
+# adjust weighted scores
+apts_by_dogparks$adjust_weighted_score <- round(((100*apts_by_dogparks$weighted_score) / max_score), 0)
+
+# summary(apts_by_dogparks$adjust_weighted_score)
+
+```
+
+
+```{r, echo=F}
+dogpark_df$geometry <- NULL # but retain center point
+park_df$geometry <- NULL
+greenway_df$geometry <- NULL
+
+dogpark_df <- st_as_sf(dogpark_df) # make sf again
+park_df <- st_as_sf(park_df)
+greenway_df <- st_as_sf(greenway_df)
+
+raleigh_df <- list(apts_by_dogparks, dogpark_df, park_df, petshop_df, pub_df,
+                                  cafe_df, restaurant_df)
+
+# convert to same crs using looping with lapply and function
+raleigh_df <- lapply(raleigh_df, function(x) st_transform(x, crs = 4326))
+```
+
+For context, apartment bufferes were mapped with dog parks, parks, and petshops. There are numerous parks throughout the city, but fewer dog parks and pet shops. The apartments with 1 kilometer of a dog bark broadly follow an east-west trajectory.
+
+```{r, echo=F, message=F}
+labels <- sprintf("apartment price: %s",
+          prettyNum( raleigh_df[[1]]$prices, digits = 4))
+
+
+leaflet() %>% 
+  addProviderTiles(providers$CartoDB.Positron, group = "Basemap") %>% 
+  addPolygons(data = raleigh_df[[1]], group = "Apartments", color = "black", opacity = 0, fillOpacity = 0.2, label = labels) %>% 
+  addCircles(data = raleigh_df[[2]], group = "Dog Parks", color = "blue") %>% 
+  addCircles(data = raleigh_df[[3]], group = "Parks", color = "green") %>%
+  addCircles(data = raleigh_df[[4]], group = "Pet Shops", color = "yellow") %>% 
+  addLayersControl(overlayGroups = c("Basemap", "Apartments", "Dog Parks", "Parks", "Pet Shops"), position = "topright") %>% 
+  addLegend(colors = c("black", "blue", "green", "yellow"), labels = c("apartment buffers", "dog parks", "parks", "pet shops"), position = "bottomright")
+```
+
+## Best and Worst Walking Scores
+
+The best walking score received a grade of 68, with prices around $1600 per month. The worse walking score received a grade of 8, and similarly, had a price of 1500 per month. A number of apartments were in the same complex in the best walking scores. This was also true for the apartments with mid walking scores.
+```{r, echo=F}
+apts_by_dogparks$geometry <- NULL
+
+walkscore.df <- craigslist[, c(1, 7,8)]
+walkscore.df <- merge(walkscore.df, apts_by_dogparks, by = "ids")
+score.pal <- viridis::magma(70)
+walkscore.df$score.pal <- score.pal[walkscore.df$adjust_weighted_score]
+
+
+```
+
+```{r, echo=F}
+ggplot(walkscore.df) +
+  geom_point(aes(x=adjust_weighted_score, y =prices), alpha = .25)+
+  labs(x = "Walking Score", y = "Monthly Rent Price", title = "Rent Price vs Walking Score")+
+  theme_bw()
+    
+```
+
+The apartments with the best walking score are located in downtown Raleigh and Carey. The apartments with teh worst walking score are located in eastern Raleigh, near Knightdale.
+
+
+
+```{r, echo=F, message=F}
+labels <- sprintf("walk score: %s <br/> apartment price: %s",
+          prettyNum(walkscore.df$adjust_weighted_score, digits = 4),
+          prettyNum(walkscore.df$prices, digits = 4)) %>% 
+  lapply(htmltools::HTML)
+
+leaflet() %>% 
+  addProviderTiles(providers$CartoDB.Positron, group = "Basemap") %>%
+  addCircleMarkers(data =walkscore.df, label = labels, 
+             fillColor = as.character(walkscore.df$score.pal), radius = 4, stroke = F, fillOpacity = 1) 
+  # addLegend(position = "bottomright", colors = walkscore.df$score.pal)
+
+```
+
+## Characteristics of Walking Scores
+
+A single observation of the best, middle and worst walking scores were taken form the data. The best score (68) reveals that the number of adjacent parks contributes heavily to the score. There are 9 parks, which each received a weighted score of 6 prior to conversion to the 100 scale. Restaurants also contribute heavily by shear number (29), but only contribute 1 each to the weighted score. Interestingly, the maximum score does not have any nearby greenway, while the minimum score has 1 adjacent greenway.
+
+```{r, echo=F}
+walkscore.df <-  walkscore.df[!duplicated(walkscore.df$adjust_weighted_score),]
+
+
+
+# summary(walkscore.df$adjust_weighted_score)
+
+walkscore.df <- walkscore.df %>% arrange(desc(adjust_weighted_score)) 
+max.walk <- walkscore.df[1, c(10:16)] # 68
+mid.walk <- walkscore.df[6, c(10:16)] # 222
+min.walk <- walkscore.df[10, c(10:16) ] # 8
+
+walk.df <- rbind(max.walk, mid.walk, min.walk)
+walk.df$score <- c("max score", "mid score", "min score")
+
+walk.df <- melt(walk.df, id.vars="score") # to arrange for plot, based on score column
+
+ggplot(walk.df, aes(x = score, y = value, fill = variable)) + 
+  geom_bar(stat="identity", 
+           position = "stack") +
+  labs(x = "Walk Score", y = "Count", title = "Contribution of Amenities to Walk Scores") +
+  scale_fill_discrete(labels=c("dog parks", "parks", "greenway", "petshops", "pubs", "cafes", "restaurants"), name = "")
+
+```
+
+The report created a dog walking score for apartments. Downtown Raleigh offers a wealth of dog walking opportunity. However, this report is limited in detail. Further exploration should study details about the apartment specifications. For example, how many bedrooms the apartments has or whether the apartments has outdoor space may affect dog owner renting behavior and willingness to pay more or less monthly rent. Regardless, the report offers a insight to dog owners looking for apartments with nearby dog amenities.
