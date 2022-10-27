@@ -1,0 +1,217 @@
+---
+title: "lab5_networks"
+author: "Chris Samoray"
+date: "2022-10-17"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+library(tidyverse)
+library(igraph)
+library(here)
+library(ggraph)
+library(leaflet)
+library(CINNA)
+library(ggmap)
+library(sf)
+library(RColorBrewer)
+```
+
+```{r}
+tripdata <- read_csv(here("data", "lab3", "201806-citibike-tripdata.csv"))
+
+tripdata <- rename(tripdata,              #rename column names to get rid of the space
+                   Slat = `start station latitude`,
+                   Slon = `start station longitude`,
+                   Elat = `end station latitude`,
+                   Elon = `end station longitude`,
+                   Sstid = `start station id`,
+                   Estid = `end station id`,
+                   Estname = `end station name`,
+                   Sstname = `start station name`
+                   
+)
+diffdesttrips <- tripdata[tripdata$Estid != tripdata$Sstid, ] # to make sure there are no loops or self-connections. 
+
+(trips_graph <- diffdesttrips %>% 
+        select(Sstid,Estid) %>%
+        graph.data.frame(directed = T)) #We are using directed graph because the links have from and to edges. You can choose to ignore them.
+
+vcount(trips_graph)
+
+ecount(trips_graph)
+
+is.directed(trips_graph)
+```
+
+```{r}
+
+#vertices and edges
+V(trips_graph) %>% head() # fcn from igraph library
+E(trips_graph) %>% head()
+
+
+tmp1 <- diffdesttrips %>%
+  group_by(Sstid) %>%
+  summarise(
+    stname = first(Sstname),
+    lon = first(Slon),
+    lat = first(Slat))%>%
+  rename(stid = Sstid)
+
+tmp2 <- diffdesttrips %>%
+  group_by(Estid) %>%
+  summarise(
+    stname = first(Estname),
+    lon = first(Elon),
+    lat = first(Elat)) %>%
+  rename(stid = Estid)
+
+station_locs <- rbind(tmp1, tmp2) %>% unique()
+```
+
+```{r}
+
+set.seed(200) # For reproducibility because of randomisation below
+station_sample <- sample(V(trips_graph), 20)
+sub_trips <- induced_subgraph(trips_graph, station_sample)
+
+
+# plot using ggraph
+# Note that the graph does not respect the geographic locations. If you want to fix the positions relative to their lat/long coordinates, you should can specify them using layout parameters.
+ggraph(sub_trips, layout = 'kk') + 
+    geom_edge_fan(show.legend = FALSE) +
+    geom_node_point()
+```
+
+```{r}
+degree(trips_graph, mode = 'out') %>%
+  as.tibble %>%
+  ggplot()+
+  geom_density(aes(x=value))
+
+# Check out what the degree.distribution produces and how to interpret the results.
+degree.distribution(trips_graph) %>% head()
+
+# In particular, you want to look for the outliers in the distribution. For example to find the stations with only end trips but no start trips, i.e stations that are solely destinations
+V(trips_graph)$name[degree(trips_graph, mode="out") == 0 & degree(trips_graph, mode="in") > 0]
+```
+
+```{r}
+tmp <- degree(trips_graph, mode = 'out') %>%
+  as.tibble() %>%
+  rename(Outdegree = value)%>%
+  mutate(stid = V(trips_graph)$name %>% as.numeric()) 
+
+
+station_locs <- station_locs %>% 
+  left_join(tmp, by='stid')
+
+
+ Npal <- colorNumeric(
+   palette = "Reds", n = 5,
+   domain = station_locs$Outdegree
+ )
+
+
+station_locs %>%
+    leaflet()  %>%
+  addProviderTiles(providers$Stamen.TonerLite, group = "Basemap") %>%
+   addCircles(
+     lng = station_locs$lon,
+     lat = station_locs$lat,
+     radius = (station_locs$Outdegree - mean(station_locs$Outdegree))/sd(station_locs$Outdegree) * 30,
+     fillOpacity = .6,
+    fillColor = Npal(station_locs$Outdegree),
+     group = 'Stations',
+     stroke=FALSE
+   ) %>%
+  addLegend("topleft", pal = Npal, values = ~Outdegree,
+            labFormat = function(type, cuts, p) {
+              n = length(cuts) 
+              paste0(prettyNum(cuts[-n], digits=1, big.mark = ",", scientific=F), " - ", prettyNum(cuts[-1], digits=1, big.mark=",", scientific=F))
+            },
+            title = "Out degree/Trip Starts",
+            opacity = 1
+  )
+
+
+
+```
+```{r}
+# Careful with division. If you have a nodes that are only origins, i.e. in-degree is 0, you will have a divison by 0 problem.
+V(trips_graph)$name[degree(trips_graph, mode="out") / degree(trips_graph, mode="in") > 1.2]
+
+station_locs$eigencentrality <- eigen_centrality(trips_graph)$vector # fcn operates on graph, makes object and then selects element in object
+
+# page rank centrality
+tmp  <- page_rank(trips_graph)$vector %>% 
+    boxplot.stats() %>%
+    .[["out"]] %>% ## Box plot identifies the outliers, outside the whiskers. The default value is 1.5 outside the box.
+     names() %>% 
+    as.numeric()
+
+station_locs %>% 
+  filter(stid %in% tmp) %>%
+  select('stname')
+
+# closeness centrality
+tmp <- closeness(trips_graph, mode='all') %>% 
+  boxplot.stats() %>%
+  .[['out']] %>%
+   names() %>%
+    as.numeric()
+
+station_locs %>% 
+  filter(stid %in% tmp) %>%
+  select('stname')
+```
+
+There are hundreds of centrality measures out there. Be careful to pick and choose the right ones for your proiblem. To assist with this, you can use CINNA (Central Informative Nodes in Network Analysis) package for computing, analyzing and comparing centrality measures submitted to CRAN repository.
+```{r}
+proper_centralities(trips_graph)
+
+# community detection
+E(trips_graph)$weight <- 1
+station_graph  <- simplify(trips_graph, edge.attr.comb="sum")
+
+ecount(station_graph) == ecount(trips_graph)
+# [1] FALSE
+sum(E(station_graph)$weight) == ecount(trips_graph)
+# [1] TRUE
+all.equal(vcount(station_graph), vcount(trips_graph))
+# [1] TRUE
+
+is.directed(station_graph)
+```
+
+Walktrap algorithm finds the communities by random walks in the graph. The intuition is that random walks are more likely to be within a community that across communities.
+```{r}
+wlktrp_mmbr <- data.frame (clstrmm  = cluster_walktrap(station_graph)$membership %>% as.factor, 
+                          stid = V(station_graph)$name %>% as.numeric()
+                          ) %>% as.tibble()
+
+
+wlktrp_mmbr$clstrmm %>% summary()
+
+station_locs <- station_locs %>%
+                inner_join(wlktrp_mmbr, by='stid')
+
+bnds <- station_locs %>% st_as_sf(coords=c("lon",'lat')) %>% st_bbox %>% unname
+
+nybg <- get_stamenmap(bbox=bnds, maptype = 'toner-lite', zoom = 11)
+
+numColors <- levels(station_locs$clstrmm) %>% length()
+myColors <- colorRampPalette(brewer.pal(8,"Dark2"))(numColors) # Expanding the number of colors available from 8 
+
+  ggmap(nybg)+
+  geom_point(aes(x=lon, y=lat, color=clstrmm), alpha=.9, data=station_locs)+
+  scale_color_manual(values = myColors)+ 
+     scale_x_continuous("", breaks=NULL)+
+   scale_y_continuous("", breaks=NULL)+
+   theme(panel.background = element_rect(fill='white',colour='white'), legend.position = "none") +
+  labs(colour = "Communities")
+```
+

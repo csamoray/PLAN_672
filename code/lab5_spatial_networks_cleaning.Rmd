@@ -1,0 +1,154 @@
+---
+title: "lab_5_spatial_networks_cleaning"
+author: "Chris Samoray"
+date: "2022-10-26"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+# remotes package allows for getting package from github if removed from CRAN
+# remotes::install_github("luukvdmeer/sfnetworks")
+
+library(osmdata)
+library(tidyverse)
+library(sf)
+library(igraph)
+library(tidygraph)
+library(sfnetworks)# bridges sf and tidygraph packages
+library(tmap)
+library(dbscan)
+```
+
+
+```{r}
+# Download walkable ways in downtown Carborro
+we_foot <- opq("Downtown Carrboro, North Carolina") %>% 
+  add_osm_features(features = c('"highway"="footway"',
+                                '"highway"="steps"',
+                                '"foot"="yes"',
+                                '"highway"="living_street"')) %>% 
+  osmdata_sf() #convert to spatial dataframe\
+
+names(we_foot)
+
+we_foot
+
+we_foot$osm_polygons %>% 
+  st_geometry() %>% 
+  plot()
+
+poly_to_lines <- st_cast(we_foot$osm_polygons, "LINESTRING")
+
+we_foot_lines <- bind_rows(we_foot$osm_lines, poly_to_lines)
+
+we_foot_lines %>% 
+  st_geometry() %>% 
+  plot()
+```
+```{r}
+# conver spatial object to spatial network
+foot_net <- as_sfnetwork(we_foot_lines, directed = FALSE)
+plot(foot_net)
+
+# make edges and nodes smaller
+plot(st_geometry(foot_net, "edges"), lwd = 1) # make edges and nodes smaller
+plot(st_geometry(foot_net, "nodes"), pch = 5, cex = .2, add = TRUE)
+```
+
+```{r}
+# remove multiple edges and loops 
+# loops connects a point to itself, multiple edges are more than one edges that connect the same two nodes
+foot_net = foot_net %>%
+  activate("edges") %>%
+  arrange(edge_length()) %>%
+  filter(!edge_is_multiple()) %>%
+  filter(!edge_is_loop())
+
+plot(st_geometry(foot_net, "edges"), lwd = 1)
+plot(st_geometry(foot_net, "nodes"), pch = 5, cex = .2, add = TRUE)
+```
+Some edges have interior nodes that are connected to other edges. We need to divide such edges. “to_spatial_subdivision” is the function we use.
+
+On the other hand, there will be nodes that only connect two edges. Those nodes are not critical and can be removed. For that we use, “to_spatial smooth.
+```{r}
+foot_net <- convert(foot_net, to_spatial_subdivision)
+vcount(foot_net)
+ecount(foot_net)
+
+foot_simple <- convert(foot_net, to_spatial_smooth)
+vcount(foot_simple)
+ecount(foot_simple)
+```
+```{r}
+tmap_mode("view")
+
+tm_tiles("CartoDB.Positron") +
+tm_shape(st_as_sf(foot_net, "edges")) +
+tm_lines(col = "footway", palette = "Accent", colorNA = "red") +
+tm_shape(st_as_sf(foot_net, "nodes")) +
+  tm_dots()
+```
+
+```{r}
+# removing islands, We can remove islands by keeping only the neighborhoods with order more than 5
+
+foot_net <- foot_net %>% 
+  activate(nodes) %>% 
+  mutate(neighbourhood = local_size(order = 6)) %>% 
+  filter(neighbourhood > 5)
+```
+
+```{r}
+#simplify intersections by contracting nodes
+node_coords = foot_net %>%
+  activate("nodes") %>%
+  st_coordinates()
+
+#0.004
+clusters = dbscan(node_coords, eps = 0.0001, minPts = 1)$cluster
+
+unique(clusters)
+
+clustered = foot_net %>%
+  activate("nodes") %>%
+  mutate(cls = clusters)
+
+clustered = clustered %>%
+  mutate(cmp = group_components())
+
+contracted = convert(
+  clustered,
+  to_spatial_contracted,
+  cls, cmp,
+  simplify = TRUE
+)
+
+clustered = clustered %>% 
+  convert(to_spatial_contracted, cls, cmp)
+
+ecount(clustered)
+vcount(clustered)
+
+```
+```{r}
+tm_tiles("CartoDB.Positron") +
+tm_shape(st_as_sf(clustered, "edges")) +
+  tm_lines(col = "footway", palette = "Accent", colorNA = "red") +
+tm_shape(st_as_sf(clustered, "nodes")) +
+  tm_dots()
+```
+```{r}
+
+foot_net <- foot_net %>% 
+  activate("edges") %>% 
+  mutate(weight = edge_length())
+
+ggplot() +
+  geom_sf(data = st_as_sf(foot_net, "edges"),
+          mapping = aes(colour = as.numeric(weight))) +
+  labs(colour = "Edge length (m)")
+
+```
+

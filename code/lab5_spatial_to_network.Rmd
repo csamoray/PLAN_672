@@ -1,0 +1,326 @@
+---
+title: "lab5_spatial_to_network"
+author: "Chris Samoray"
+date: "2022-10-19"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+library(tidycensus)
+library(sf)
+library(tidyverse)
+library(tmap)
+library(RColorBrewer)
+library(igraph)
+library(tigris)
+library(rgeos)
+library(spdep)
+library(skimr)
+library(here)
+```
+
+```{r}
+
+census_api <- read.table(here("api.txt"))
+census_api <- census_api[1,1]
+census_api_key(census_api)
+options(tigris_use_cache = TRUE)
+
+NC_SC <- c('37', '45') # FIPS code for NC and SC.
+
+pov <- reduce(
+  map(NC_SC, function(x) {
+    get_acs(geography = "tract", variables = "B17001_002",  summary_var = 'B17001_001',
+            state = x, geometry = TRUE, year = 2016)
+  }), 
+  rbind
+) ## read up on these map and reduce functions in purrr. They are key to functional programming paradigm
+
+cbsa <- core_based_statistical_areas() %>% st_as_sf()  # Download Core Based Statistical Areas file
+
+states_shps <- states() %>% 
+               st_as_sf() %>%
+               filter(GEOID %in% NC_SC) # Limit to the Carolinas
+ 
+MSA <- cbsa[states_shps,] %>%  # Filter CBSA that is intersected/touched by the state boundary.
+            filter(LSAD=="M1")  # Limit to Metropolitan areas
+
+# Download CBSAs and MSAs for reference.
+
+cbsa <- core_based_statistical_areas() %>% st_as_sf()  # Download Core Based Statistical Areas file
+states_shps <- states() %>% 
+               st_as_sf() %>%
+               filter(GEOID %in% NC_SC) # Limit to the Carolinas
+ 
+MSA <- cbsa[states_shps,] %>%  # Filter CBSA that is intersected/touched by the state boundary.
+            filter(LSAD=="M1")  # Limit to Metropolitan areas
+
+pov <- reduce(
+  map(NC_SC, function(x) {
+    get_acs(geography = "tract", variables = "B17001_002",  summary_var = 'B17001_001',
+            state = x, geometry = TRUE, year = 2016)
+  }), 
+  rbind
+) ## read up on these map and reduce functions in purrr. They are key to functional programming paradigm
+
+
+pov_rate <- pov %>%
+  rename(population = summary_est) %>%
+  filter(population>0)%>%
+  mutate(pov_rate = estimate/population) %>%
+  select(GEOID, NAME, population, pov_rate)
+
+## Unemployment rate
+lf_m <- paste("B23001_", formatC(seq(4,67,7), width=3, flag="0"), "E", sep="")
+lf_f <- paste("B23001_", formatC(seq(90,153,7), width=3, flag="0"), "E", sep="")
+
+lf <- reduce(
+  map(NC_SC, function(x){
+    get_acs(geography='tract', variables = c(lf_m, lf_f), state=x, year=2016)
+  }),
+  rbind
+)
+
+unemp_m <- paste("B23001_", formatC(seq(8,71,7), width=3, flag="0"), "E", sep="")
+unemp_f <- paste("B23001_", formatC(seq(94,157,7), width=3, flag="0"), "E", sep="")
+
+unemp <- reduce(
+  map(NC_SC, function(x){
+    get_acs(geography='tract', variables = c(unemp_m, unemp_f), state=x, year=2016)
+  }),
+  rbind
+)
+
+lf_t <- lf %>% 
+  group_by(GEOID) %>%
+  summarize(lf_est = sum(estimate, na.rm=T))
+
+unemp_t <- unemp %>% 
+  group_by(GEOID) %>%
+  summarize(unemp_est = sum(estimate, na.rm=T))
+
+unemp_rate <- merge(lf_t, unemp_t, by='GEOID') %>% 
+  filter(lf_est >0) %>%
+  mutate(unemp_rate = unemp_est/lf_est)
+
+tract_stats <- merge(pov_rate, unemp_rate, by='GEOID')
+
+distressed_tracts <- tract_stats %>%
+                     filter(unemp_rate > .10 & pov_rate > .20) # arbitrary 20% and 10% as thresholds respectively
+
+tmap_mode("view")
+
+m1 <- tm_basemap("Stamen.TonerBackground")+
+      tm_shape(distressed_tracts) +
+      tm_fill(col='red', alpha=.5)+
+      tm_tiles("Stamen.TonerLabels")
+
+m1
+```
+
+```{r}
+dt <- as(distressed_tracts, "Spatial") # Convert to spatial
+
+temp1 <- gUnarySTRtreeQuery(dt) # Construct list of polygons that are likely to intersect/touch by first looking at bounding boxes.
+
+dt_nb <- poly2nb(dt, queen=FALSE, foundInBox=temp1, row.names = dt$GEOID) # Construct a neighborhood object
+
+plot(dt)
+
+plot(dt_nb, coordinates(dt), col='red', points=F, add=T) # Quickly visualise the graph
+```
+
+Occasionally, it becomes useful not only to look at attributes of the ‘focal’ geography, but also calculate some notion of aggregate neighbourhood attributes. From this, one could derive if the focal geography is an anomaly or if it is consistent with the neighbourhood trend. This becomes important when figuring out hotspots or clusters in Spatial Statistics. For the moment, let me restrict attention to calculating neighbourhood level attributes. Recall that 1 in a binary adjacency matrix represent the neighbours in a graph. So matrix multiplication with the relevant attribute will automatically yield aggregate neighbourhood attribute. Say for example, we want to calculate how many people live in the adjacent census tracts for each tract, we can do the following.
+
+
+Notice something interesting here. The neighbourhood population N_pop has a minimum value 0, even when the minimum value of population is non-zero. This means that there are some census tracts, that do not have any neighbours. We explicitly allowed those kind using the zero.policy = TRUE in the nb2mat function. Just for kicks, lets visualise what tracts they are.
+```{r}
+temp1 <- gUnarySTRtreeQuery(tract_stats %>% as("Spatial")) # Construct list of polygons that are likely to intersect/touch by first looking at bounding boxes.
+tract_nb <- poly2nb(tract_stats, queen=TRUE, foundInBox=temp1, row.names = tract_stats$GEOID) %>% # Construct a neighborhood object. In this case, I am including neighbors that only touch on a corner using queen contiguity instead of rook continguity
+             nb2mat(zero.policy=TRUE, style="B") # Create a Binary Adjacency Matrix.
+              
+tract_stats <- tract_stats %>%
+                   mutate(N_pop = tract_nb %*% population)
+
+tract_stats %>% 
+  st_set_geometry(NULL) %>%
+  select("population", "N_pop") %>%
+  skim # see how this shakes out.
+
+poly2nb(tract_stats, queen=TRUE, foundInBox=temp1, row.names = tract_stats$GEOID) # census tracts without neighbors, 1 region: 250
+tract_stats[250,] 
+
+m2 <-
+  tm_basemap() +
+  tm_shape(tract_stats[250,]) +
+  tm_fill(col='red')
+
+m2
+```
+
+What if you use a different neighbourhood relationship, for example, based on the thresholds distances of centroids? 
+```{r, EXERCISE 1}
+test <- tract_stats
+
+test <- st_centroid(test)
+
+tract_nb2 <- dnearneigh(test, d1 = 1 , d2 = 5,  row.names = test$GEOID) %>% # Construct a neighborhood object. In this case, I am including neighbors that only touch on a  d2corner using queen contiguity instead of rook continguity
+             nb2mat(zero.policy=TRUE, style="B") # Create a Binary Adjacency Matrix.
+              
+tract_stats2 <- test %>%
+                   mutate(N_pop = tract_nb %*% population)
+
+test %>% 
+  st_set_geometry(NULL) %>%
+  select("population", "N_pop") %>%
+  skim # see how this shakes out.
+
+dnearneigh(test, d1 = 20 , d2 = 40,  row.names = test$GEOID) # census tracts without neighbors, 1 region: 250
+
+test %>% filter(GEOID == "37055970502")
+
+
+```
+
+Occasionally it becomes useful to calculate not just an aggregate, but an average of the neighbourhood of the focal geography. To that instead of a binary adjacency matrix, we can construct a row-standardised weight matrix from the adjacency matrix (or directly)
+
+```{r}
+tract_nb <- poly2nb(tract_stats, queen=TRUE, foundInBox=temp1, row.names = tract_stats$GEOID) %>% # Construct a neighborhood object. In this case, I am including neighbors that only touch on a corner using queen contiguity instead of rook continguity
+             nb2mat(zero.policy=TRUE, style="W") # Create a row standardised matrix. note the style argument.
+              
+tract_stats <- tract_stats %>%
+                   mutate(N_pop_avg = tract_nb %*% population)
+
+tract_stats %>% 
+  st_set_geometry(NULL) %>%
+  select("population", "N_pop", "N_pop_avg") %>%
+  skim # see how this shakes out.
+
+tract_stats %>% 
+  filter (population >= N_pop_avg * 1.5) %>%
+  tm_shape() +
+  tm_fill(col="red")+
+  tm_basemap("Stamen.TonerBackground")+
+  tm_tiles("Stamen.TonerLabels")
+```
+Here is the tricky bit. We need to get lf_est as non-zero only where tract_nb==1 in the same format as tract_nb. Fortunately multiplication by 0 helps us. * is element by element multiplication, where as %*% is matrix multiplication. In R, when you are doing element-by-element multiplication by need to have the two matrices to be the same dimension. However, tract_stats$lf_est is a vector not a matrix, whereas tract_nb is a matrix.
+```{r}
+tract_nb <- poly2nb(tract_stats, queen=TRUE, foundInBox=temp1, row.names = tract_stats$GEOID) %>% 
+             nb2mat(zero.policy=TRUE, style="B") 
+
+denom_temp <- (tract_nb %*% tract_stats$lf_est)
+
+num_temp <-  t(tract_nb * as.vector(tract_stats$lf_est))
+weight_matrix <- as.matrix(num_temp) / as.vector(denom_temp)
+
+weight_matrix[1:5, 1:5] 
+
+rowSums(weight_matrix) %>% summary()
+```
+From the rowSums we know that most of the rows sum to 1, except for 1 row. That has a NA and that has to do with vision by 0. Check the denom_temp and see where the zero is occurring. It should occur for the tract that has no neighbours.
+
+Now it is straightforward to get the labour force weighted unemployment rate of the neighbours
+
+```{r}
+tract_stats <- tract_stats %>%
+                   mutate(N_unemp_avg = drop(weight_matrix %*% unemp_rate)) %>%
+                   select("unemp_rate", "N_unemp_avg")
+
+
+tmap_mode("plot")
+
+
+tmap_arrange(
+  tm_shape(tract_stats) +
+    tm_polygons("unemp_rate", legend.format = list(digits=3), n=5, style="quantile", border.alpha=.2),
+  
+  tm_shape(tract_stats)+
+    tm_polygons(col="N_unemp_avg", legend.format = list(digits=3), n=5, style="quantile", border.alpha=.2)
+)
+```
+
+```{r}
+distressed_tracts_graph <- dt_nb %>%  
+  nb2mat(zero.policy=TRUE, style="B") %>% # Create a Binary Adjacency Matrix.
+  graph.adjacency(mode='undirected', add.rownames=NULL) # construct an undirected graph from the adjacency matrix.
+
+cl <- clusters(distressed_tracts_graph) # This decomposes the graph into connected subgraphs.
+
+sum(dt$GEOID!= names(cl$membership)) # this is 0. So we can safely assign the clustermembersip variable by rows rather than doing a merge.
+# [1] 0
+dt$clustermembership <- cl$membership
+
+
+### Visualisation
+
+# Adding the MSA boundaries for effect to see if the deprivation is primiarly a metropolitan phenomenon or outside the metropolitan areas
+
+pal <- colorRampPalette(brewer.pal(8, "Dark2"))
+numColors <- cl$membership %>% unique() %>% length()
+
+m3<-
+ dt %>% st_as_sf() %>%
+   tm_shape()+
+   tm_fill("clustermembership", legend.show = FALSE, palette = pal(numColors))+
+   tm_shape(MSA)+
+   tm_fill(col='gray85', alpha=.5) +
+   tm_basemap("Stamen.TonerBackground")+
+   tm_tiles("Stamen.TonerLabels")
+
+tmap_leaflet(m3)
+
+```
+
+Clusters function decomposes the graph in subgraphs, i.e. nodes belong to a subgraph, if there is a path between them. If there is not, they belong to different subgraphs.
+```{r}
+ggplot() + 
+  geom_histogram(aes(cl$csize))
+```
+From the above histogram it is relatively obvious that the many (64.67 %) of the distressed census tracts are are relatively isolated (cluster size is \(\le\) 2). Many of them are even in clusters of size 1. We could see if there is a geographic pattern in these isolated clusters.
+```{r}
+smallclusters <- (1:cl$no)[cl$csize <=2]
+
+m4 <-
+  dt %>% st_as_sf()%>%
+  filter(clustermembership %in% smallclusters) %>%
+  tm_shape()+
+  tm_fill(col='red')+
+   tm_shape(MSA)+
+   tm_fill(col='gray85', alpha=.5) +
+   tm_basemap("Stamen.TonerBackground")+
+   tm_tiles("Stamen.TonerLabels")
+
+tmap_leaflet(m4)
+```
+```{r}
+diameters_of_graphs <-   distressed_tracts_graph %>%
+       decompose() %>%
+       sapply(function(x)diameter(x)) %>% 
+       as_tibble()
+
+names(diameters_of_graphs)[1] <- 'dia'
+
+diameters_of_graphs$cl_membership <- 1:(distressed_tracts_graph %>% decompose() %>% length())
+
+
+dt <- merge(dt, diameters_of_graphs, by.x='clustermembership', by.y='cl_membership')
+
+# Quickly showing the stringy and blobby (real words) distressed regions
+maxdia <- max(dt$dia,na.rm=T)
+
+m5 <- dt %>%
+      st_as_sf() %>%
+      tm_shape()+
+      tm_fill(col='dia',
+                  style="fixed",
+                  breaks = c(0,4,10,maxdia),
+                  palette = c('blue', NA, 'red'),
+                  labels = c("Blobby", "Normal", "Stringy"))+
+      tm_basemap("Stamen.TonerBackground")+
+     tm_tiles("Stamen.TonerLabels")
+
+tmap_leaflet(m5)
+```
+
